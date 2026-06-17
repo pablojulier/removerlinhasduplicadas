@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Desduplicador de Telemetria ATS</title>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background-color: #f1f5f9;
+            color: #334155;
+            padding: 40px 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 80vh;
+        }
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 10px rgb(0 0 0 / 0.1);
+            max-width: 500px;
+            width: 100%;
+            text-align: center;
+        }
+        h2 { color: #0f172a; margin-bottom: 10px; font-size: 1.6rem; }
+        p { color: #64748b; font-size: 0.95rem; margin-bottom: 25px; }
+        .upload-area {
+            border: 3px dashed #3b82f6;
+            padding: 50px 20px;
+            border-radius: 10px;
+            background: #f8fafc;
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+        }
+        .upload-area.dragover {
+            border-color: #10b981;
+            background: #ecfdf5;
+        }
+        .upload-area:hover {
+            border-color: #2563eb;
+            background: #eff6ff;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: bold;
+            display: none;
+            white-space: pre-line;
+            text-align: left;
+        }
+        .status.success { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
+        .status.info { background: #e0e7ff; color: #4338ca; border: 1px solid #c7d2fe; }
+        .status.error { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; overflow-x: auto; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🧹 Desduplicador Localização Fixo V4.0</h2>
+    <p>Garante a remoção de linhas duplicadas no mesmo ponto, mantendo apenas 1 amostra da parada.</p>
+
+    <div id="drop-zone" class="upload-area">
+        <strong style="color: #3b82f6; font-size: 1.1rem;">Arraste o arquivo Excel aqui</strong>
+        <div style="font-size: 0.85rem; color: #94a3b8; margin-top: 8px;">ou clique para selecionar (.xlsx, .xls)</div>
+        <input type="file" id="excel-file" accept=".xlsx, .xls" style="display: none;">
+    </div>
+
+    <div id="status-box" class="status"></div>
+</div>
+
+<script>
+    var dropZone = document.getElementById('drop-zone');
+    var inputFile = document.getElementById('excel-file');
+
+    dropZone.addEventListener('click', () => inputFile.click());
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        window.addEventListener(eventName, e => { e.preventDefault(); e.stopPropagation(); }, false);
+        dropZone.addEventListener(eventName, e => { e.preventDefault(); e.stopPropagation(); }, false);
+    });
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'), false);
+    });
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'), false);
+    });
+
+    dropZone.addEventListener('drop', function(e) {
+        var dt = e.dataTransfer;
+        if (dt.files && dt.files.length > 0) processarEDescarregarExcel(dt.files[0]);
+    });
+
+    inputFile.addEventListener('change', function(e) {
+        if (e.target.files && e.target.files.length > 0) {
+            processarEDescarregarExcel(e.target.files[0]);
+            this.value = '';
+        }
+    });
+
+    function exibirStatus(texto, classe) {
+        var box = document.getElementById('status-box');
+        box.innerText = texto;
+        box.className = "status " + classe;
+        box.style.display = 'block';
+    }
+
+    function processarEDescarregarExcel(arquivo) {
+        exibirStatus("Processando planilha e limpando duplicatas de posição...", "info");
+
+        var leitor = new FileReader();
+        leitor.onload = function(evt) {
+            try {
+                var dadosUint = new Uint8Array(evt.target.result);
+                var workbook = XLSX.read(dadosUint, { type: 'array', cellDates: true, raw: false });
+                
+                var nomeAba = workbook.SheetNames[0];
+                var aba = workbook.Sheets[nomeAba];
+                
+                var matrizDados = XLSX.utils.sheet_to_json(aba, { header: 1, defval: "" });
+                
+                if (matrizDados.length === 0) {
+                    exibirStatus("Erro: A planilha está vazia.", "error");
+                    return;
+                }
+
+                // Localiza o cabeçalho correto
+                var indiceCabecalho = 0;
+                for (var i = 0; i < matrizDados.length; i++) {
+                    if (matrizDados[i].length > 0 && matrizDados[i].some(celula => String(celula).trim() !== "")) {
+                        indiceCabecalho = i;
+                        break;
+                    }
+                }
+
+                var cabecalhos = matrizDados[indiceCabecalho].map(c => String(c).toLowerCase().trim());
+                
+                // Mapeamento dinâmico baseado estritamente nas colunas da sua imagem
+                var idxLat = cabecalhos.indexOf('latitude');
+                var idxLon = cabecalhos.indexOf('longitude');
+                var idxRef = cabecalhos.indexOf('referência') !== -1 ? cabecalhos.indexOf('referência') : cabecalhos.indexOf('referencia');
+                var idxVel = cabecalhos.findIndex(c => c.includes('vel'));
+
+                // Se não achar via texto mapeado, usa as posições lógicas padrão da imagem
+                if (idxLat === -1) idxLat = 0;
+                if (idxLon === -1) idxLon = 1;
+                if (idxRef === -1) idxRef = 5; // Coluna 6 (F) na imagem
+                if (idxVel === -1) idxVel = cabecalhos.length - 1; // Última coluna
+
+                var chavesUnicas = new Set();
+                var linhasFiltradas = [];
+                
+                // Mantém o cabeçalho
+                linhasFiltradas.push(matrizDados[indiceCabecalho]);
+
+                var totalAntes = 0;
+
+                for (var r = indiceCabecalho + 1; r < matrizDados.length; r++) {
+                    var linhaAtual = matrizDados[r];
+                    if (linhaAtual.length === 0 || linhaAtual.every(c => String(c).trim() === "")) continue;
+
+                    totalAntes++;
+
+                    // Puxa os dados para validar o ponto geográfico
+                    var vLat = String(linhaAtual[idxLat] || "").trim();
+                    var vLon = String(linhaAtual[idxLon] || "").trim();
+                    var vRef = String(linhaAtual[idxRef] || "").trim();
+                    var vVel = String(linhaAtual[idxVel] || "").trim();
+
+                    // REGRA DE OURO: Criamos a assinatura ignorando a coluna de data/hora mutável!
+                    var assinaturaFixo = `${vLat}|${vLon}|${vRef}|${vVel}`;
+
+                    if (!chavesUnicas.has(assinaturaFixo)) {
+                        chavesUnicas.add(assinaturaFixo);
+                        linhasFiltradas.push(linhaAtual); // Salva a linha física completa original
+                    }
+                }
+
+                var totalRemovidos = totalAntes - (linhasFiltradas.length - 1);
+
+                // Reconstroi e baixa
+                var novaAba = XLSX.utils.aoa_to_sheet(linhasFiltradas);
+                var novoWorkbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(novoWorkbook, novaAba, nomeAba);
+
+                var excelBuffer = XLSX.write(novoWorkbook, { bookType: 'xlsx', type: 'array' });
+                var blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                var url = URL.createObjectURL(blob);
+
+                var linkTemporario = document.createElement('a');
+                linkTemporario.href = url;
+                linkTemporario.download = arquivo.name.replace(/\.[^/.]+$/, "") + "_LIMPO.xlsx";
+                document.body.appendChild(linkTemporario);
+                linkTemporario.click();
+                document.body.removeChild(linkTemporario);
+
+                exibirStatus(`✨ Concluído com sucesso!\n\n📋 Total de posições avaliadas: ${totalAntes}\n🗑️ Duplicadas estáticas eliminadas: ${totalRemovidos}\n💾 Linhas de amostra mantidas: ${linhasFiltradas.length - 1}`, "success");
+
+            } catch (err) {
+                console.error(err);
+                exibirStatus("Erro ao processar arquivo: " + err.message, "error");
+            }
+        };
+        leitor.readAsArrayBuffer(arquivo);
+    }
+</script>
+
+</body>
+</html>
